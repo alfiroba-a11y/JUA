@@ -1,6 +1,6 @@
 # JUA deployment guide
 
-JUA is a Node 20, Express and PostgreSQL application ready for a Render Web Service.
+JUA is a Node 20, Express and PostgreSQL application ready for a Render Web Service. It creates and uses its own `jua` PostgreSQL schema, so it does not collide with an existing public `users` table in a shared database.
 
 ## Deploy on Render
 

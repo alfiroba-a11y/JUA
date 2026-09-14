@@ -11,7 +11,7 @@ const expandedQuestions = require('./expanded-questions');
 
 const app = express();
 const port = Number(process.env.PORT || 10000);
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false });
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false, options: '-c search_path=jua,public' });
 const secret = process.env.JWT_SECRET;
 const MIN_DEPOSIT = 200, MIN_STAKE = 50, QUESTION_COUNT = 5;
 if (!secret) throw new Error('JWT_SECRET is required');
