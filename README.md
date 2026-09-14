@@ -38,6 +38,7 @@ Save the portal's webhook signing secret as `MOBILE_MONEY_WEBHOOK_SECRET` in Ren
 
 - Account registration and sign-in are required before wallet or game access.
 - Minimum deposit is KES 200; minimum stake is KES 50.
+- Minimum withdrawal is KES 500.
 - The mobile payment prompt goes only to the number the player enters.
 - A deposit is credited only after the server confirms it with the payment service.
 - Every profile receives unseen questions only; `seen_questions` prevents repeats.
@@ -55,3 +56,9 @@ Before enabling paid entry, obtain Kenyan legal advice and approvals, complete a
 ## Admin dashboard
 
 Set `ADMIN_PHONE` in Render before creating the administrator account. Register with that exact number, then sign in and open `/admin` on your domain. The dashboard shows registered members, wallet totals, withdrawal requests and the question bank, and lets the administrator add, pause or reactivate questions. Do not share the administrator account credentials.
+
+## Profile and payment checks
+
+Members can select the `KE` profile badge to update their display name, nickname, login mobile number and preferred wallet number. The preferred wallet number is used by the deposit and withdrawal forms.
+
+If a payment prompt does not reach the phone, confirm that `MOBILE_MONEY_BASE_URL`, `MOBILE_MONEY_API_KEY`, and `MOBILE_MONEY_ACCOUNT_ID` are set correctly in Render, that the number is an active Kenyan mobile number in the supported network, and that the payment account has sufficient service credit. The app accepts a successful provider response only when it returns a checkout reference; it then uses the configured webhook to update the balance even if the browser is closed.

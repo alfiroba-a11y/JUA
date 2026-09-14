@@ -13,7 +13,8 @@ const app = express();
 const port = Number(process.env.PORT || 10000);
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false, options: '-c search_path=jua,public' });
 const secret = process.env.JWT_SECRET;
-const MIN_DEPOSIT = 200, MIN_STAKE = 50, QUESTION_COUNT = 5;
+const MIN_DEPOSIT = 200, MIN_STAKE = 50, MIN_WITHDRAWAL = 500, QUESTION_COUNT = 5;
+const depositRefreshes = new Set();
 if (!secret) throw new Error('JWT_SECRET is required');
 app.use(helmet({ contentSecurityPolicy: false }));
 app.post('/api/payments/webhook', express.raw({ type: 'application/json', limit: '50kb' }), async (req, res) => {
@@ -82,11 +83,21 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   try {
     const phone = cleanPhone(req.body.phone), result = await pool.query('SELECT * FROM users WHERE phone=$1', [phone]), user = result.rows[0];
-    if (!user || !(await bcrypt.compare(String(req.body.password || ''), user.password_hash))) return res.status(401).json({ error: 'Incorrect number or password.' });
+    if (!user) return res.status(404).json({ error: 'Account does not exist. Please sign up.' });
+    if (!(await bcrypt.compare(String(req.body.password || ''), user.password_hash))) return res.status(401).json({ error: 'Incorrect password. Please try again.' });
     res.json({ token: tokenFor(user), user: publicUser(user) });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
-app.get('/api/me', auth, async (req, res) => { const { rows } = await pool.query('SELECT id,phone,display_name,wallet_balance,role FROM users WHERE id=$1', [req.user.sub]); res.json({ user: publicUser(rows[0]) }); });
+app.get('/api/me', auth, async (req, res) => { const { rows } = await pool.query('SELECT id,phone,display_name,nickname,wallet_phone,wallet_balance,role FROM users WHERE id=$1', [req.user.sub]); res.json({ user: publicUser(rows[0]) }); });
+app.patch('/api/profile', auth, async (req, res) => {
+  try {
+    const name = String(req.body.name || '').trim(), nickname = String(req.body.nickname || '').trim(), phone = cleanPhone(req.body.phone), walletPhone = cleanPhone(req.body.walletPhone || phone);
+    if (name.length < 2 || name.length > 40) throw new Error('Name must be 2 to 40 characters.');
+    if (nickname && (nickname.length < 2 || nickname.length > 30)) throw new Error('Nickname must be 2 to 30 characters.');
+    const { rows } = await pool.query('UPDATE users SET display_name=$1,nickname=$2,phone=$3,wallet_phone=$4 WHERE id=$5 RETURNING id,phone,display_name,nickname,wallet_phone,wallet_balance,role', [name, nickname || null, phone, walletPhone, req.user.sub]);
+    res.json({ user: publicUser(rows[0]) });
+  } catch (error) { res.status(error.code === '23505' ? 409 : 400).json({ error: error.code === '23505' ? 'That mobile number is already linked to another account.' : error.message }); }
+});
 app.post('/api/deposits', auth, async (req, res) => {
   try {
     const amount = number(req.body.amount, MIN_DEPOSIT), phone = cleanPhone(req.body.phone || req.user.phone), reference = ref('JUA');
@@ -107,7 +118,7 @@ app.get('/api/deposits/:id', auth, async (req, res) => {
 app.post('/api/withdrawals', auth, async (req, res) => {
   const client = await pool.connect();
   try {
-    const amount = number(req.body.amount, 50), phone = cleanPhone(req.body.phone);
+    const amount = number(req.body.amount, MIN_WITHDRAWAL), phone = cleanPhone(req.body.phone);
     await client.query('BEGIN'); const user = await client.query('SELECT wallet_balance FROM users WHERE id=$1 FOR UPDATE', [req.user.sub]);
     if (!user.rows[0] || user.rows[0].wallet_balance < amount) throw new Error('Your available wallet balance is not enough for this withdrawal.');
     await client.query('UPDATE users SET wallet_balance=wallet_balance-$1 WHERE id=$2', [amount, req.user.sub]);
@@ -180,7 +191,7 @@ app.post('/api/admin/questions', auth, adminOnly, async (req, res) => {
 app.patch('/api/admin/questions/:id', auth, adminOnly, async (req, res) => {
   const { rows } = await pool.query('UPDATE questions SET active=$1 WHERE id=$2 RETURNING id,active', [req.body.active === true, req.params.id]); if (!rows[0]) return res.sendStatus(404); res.json(rows[0]);
 });
-function publicUser(user) { return { id: user.id, phone: user.phone, displayName: user.display_name, walletBalance: user.wallet_balance, role: user.role || 'member' }; }
+function publicUser(user) { return { id: user.id, phone: user.phone, displayName: user.display_name, nickname: user.nickname || '', walletPhone: user.wallet_phone || user.phone, walletBalance: user.wallet_balance, role: user.role || 'member' }; }
 function publicUserWithDate(user) { return { ...publicUser(user), createdAt: user.created_at }; }
 async function mobileMoney(route, body) {
   const base = process.env.MOBILE_MONEY_BASE_URL;
@@ -190,11 +201,13 @@ async function mobileMoney(route, body) {
   return response.json();
 }
 async function refreshDeposit(transaction) {
+  if (depositRefreshes.has(transaction.id)) return;
+  depositRefreshes.add(transaction.id);
   try {
     const state = await mobileMoney('/transactionstatus', { api_key: process.env.MOBILE_MONEY_API_KEY, account_id: process.env.MOBILE_MONEY_ACCOUNT_ID, checkoutid: transaction.provider_checkout_id });
     if (state.ResultCode !== '0') return;
     if (state.ResultCode === '0') await confirmDeposit(transaction.id);
-  } catch (error) { console.error('deposit refresh failed', error.message); }
+  } catch (error) { if (error.name !== 'TimeoutError') console.error('deposit refresh failed', error.message); } finally { depositRefreshes.delete(transaction.id); }
 }
 function validSignature(rawBody, received, secret) {
   const expected = `sha256=${crypto.createHmac('sha256', secret).update(rawBody).digest('hex')}`;
