@@ -16,6 +16,25 @@ const secret = process.env.JWT_SECRET;
 const MIN_DEPOSIT = 200, MIN_STAKE = 50, QUESTION_COUNT = 5;
 if (!secret) throw new Error('JWT_SECRET is required');
 app.use(helmet({ contentSecurityPolicy: false }));
+app.post('/api/payments/webhook', express.raw({ type: 'application/json', limit: '50kb' }), async (req, res) => {
+  try {
+    const signature = String(req.headers['x-hashpay-signature'] || '');
+    const secret = process.env.MOBILE_MONEY_WEBHOOK_SECRET;
+    if (!secret || !validSignature(req.body, signature, secret)) return res.status(401).send('Invalid signature');
+    const event = JSON.parse(req.body.toString('utf8'));
+    if (event.event !== 'payment.success' || Number(event.ResponseCode) !== 0) return res.sendStatus(204);
+    const reference = String(event.TransactionReference || ''), checkoutId = String(event.CheckoutRequestID || '');
+    const amount = Number(event.TransactionAmount);
+    const phone = cleanPhone(event.Msisdn);
+    const { rows } = await pool.query("SELECT * FROM wallet_transactions WHERE (provider_checkout_id=$1 OR reference=$2) AND kind='deposit'", [checkoutId, reference]);
+    const transaction = rows[0];
+    if (!transaction || transaction.amount !== amount || transaction.phone !== phone) return res.status(400).send('Transaction does not match');
+    if (transaction.provider_checkout_id && checkoutId && transaction.provider_checkout_id !== checkoutId) return res.status(400).send('Checkout does not match');
+    if (transaction.status !== 'pending') return res.sendStatus(204);
+    await confirmDeposit(transaction.id, String(event.TransactionID || event.TransactionReceipt || '') || null);
+    res.sendStatus(204);
+  } catch (error) { console.error('webhook failed', error.message); res.status(400).send('Invalid webhook'); }
+});
 app.use(express.json({ limit: '20kb' }));
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/styles.css', (_req, res) => res.sendFile(path.join(__dirname, 'styles.css')));
@@ -174,9 +193,21 @@ async function refreshDeposit(transaction) {
   try {
     const state = await mobileMoney('/transactionstatus', { api_key: process.env.MOBILE_MONEY_API_KEY, account_id: process.env.MOBILE_MONEY_ACCOUNT_ID, checkoutid: transaction.provider_checkout_id });
     if (state.ResultCode !== '0') return;
-    const client = await pool.connect();
-    try { await client.query('BEGIN'); const updated = await client.query("UPDATE wallet_transactions SET status='confirmed',confirmed_at=NOW() WHERE id=$1 AND status='pending' RETURNING amount,user_id", [transaction.id]); if (updated.rows[0]) await client.query('UPDATE users SET wallet_balance=wallet_balance+$1 WHERE id=$2', [updated.rows[0].amount, updated.rows[0].user_id]); await client.query('COMMIT'); } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+    if (state.ResultCode === '0') await confirmDeposit(transaction.id);
   } catch (error) { console.error('deposit refresh failed', error.message); }
+}
+function validSignature(rawBody, received, secret) {
+  const expected = `sha256=${crypto.createHmac('sha256', secret).update(rawBody).digest('hex')}`;
+  return Buffer.byteLength(expected) === Buffer.byteLength(received) && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(received));
+}
+async function confirmDeposit(id, providerTransactionId = null) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const updated = await client.query("UPDATE wallet_transactions SET status='confirmed',confirmed_at=NOW(),provider_transaction_id=COALESCE($2,provider_transaction_id) WHERE id=$1 AND status='pending' RETURNING amount,user_id", [id, providerTransactionId]);
+    if (updated.rows[0]) await client.query('UPDATE users SET wallet_balance=wallet_balance+$1 WHERE id=$2', [updated.rows[0].amount, updated.rows[0].user_id]);
+    await client.query('COMMIT'); return Boolean(updated.rows[0]);
+  } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
 async function boot() { await pool.query(require('fs').readFileSync(path.join(__dirname, 'schema.sql'), 'utf8')); if (process.env.ADMIN_PHONE) await pool.query("UPDATE users SET role='admin' WHERE phone=$1", [cleanPhone(process.env.ADMIN_PHONE)]); await seed(); app.listen(port, () => console.log(`JUA listening on ${port}`)); }
 boot().catch(error => { console.error(error); process.exit(1); });

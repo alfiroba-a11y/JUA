@@ -18,10 +18,21 @@ JWT_SECRET=a long randomly generated secret
 MOBILE_MONEY_BASE_URL=payment service API base URL
 MOBILE_MONEY_API_KEY=merchant API key
 MOBILE_MONEY_ACCOUNT_ID=merchant account ID
+MOBILE_MONEY_WEBHOOK_SECRET=webhook signing secret
 ADMIN_PHONE=your Kenyan mobile number in 2547XXXXXXXX format
 ```
 
 Keep every value in Render’s secret environment variables; do not commit a `.env` file. `MOBILE_MONEY_SECURITY_CREDENTIAL` is reserved for a later provider-approved automated payout integration and is not required for withdrawal requests in this release.
+
+## Payment webhook
+
+After the Render service has a public HTTPS domain, configure this callback URL in the payment portal:
+
+```text
+https://your-domain.com/api/payments/webhook
+```
+
+Save the portal's webhook signing secret as `MOBILE_MONEY_WEBHOOK_SECRET` in Render. The endpoint verifies the signature over the exact raw request body, matches the provider checkout reference, amount and mobile number to a pending JUA deposit, and credits the wallet in one database transaction. Duplicate callbacks do not create a second credit.
 
 ## What is enforced in the app
 

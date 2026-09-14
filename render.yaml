@@ -22,6 +22,8 @@ services:
         sync: false
       - key: MOBILE_MONEY_ACCOUNT_ID
         sync: false
+      - key: MOBILE_MONEY_WEBHOOK_SECRET
+        sync: false
       - key: ADMIN_PHONE
         sync: false
 databases:
