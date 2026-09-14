@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: jua-kenya
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: jua-postgres
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MOBILE_MONEY_BASE_URL
+        sync: false
+      - key: MOBILE_MONEY_API_KEY
+        sync: false
+      - key: MOBILE_MONEY_ACCOUNT_ID
+        sync: false
+      - key: ADMIN_PHONE
+        sync: false
+databases:
+  - name: jua-postgres
+    plan: starter
