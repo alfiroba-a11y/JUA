@@ -14,7 +14,6 @@ const port = Number(process.env.PORT || 10000);
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false, options: '-c search_path=jua,public' });
 const secret = process.env.JWT_SECRET;
 const MIN_DEPOSIT = 200, MIN_STAKE = 50, MIN_WITHDRAWAL = 500, QUESTION_COUNT = 5;
-const depositRefreshes = new Set();
 if (!secret) throw new Error('JWT_SECRET is required');
 app.use(helmet({ contentSecurityPolicy: false }));
 app.post('/api/payments/webhook', express.raw({ type: 'application/json', limit: '50kb' }), async (req, res) => {
@@ -39,6 +38,7 @@ app.post('/api/payments/webhook', express.raw({ type: 'application/json', limit:
 app.use(express.json({ limit: '20kb' }));
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/styles.css', (_req, res) => res.sendFile(path.join(__dirname, 'styles.css')));
+app.get('/responsive.css', (_req, res) => res.sendFile(path.join(__dirname, 'responsive.css')));
 app.get('/overrides.css', (_req, res) => res.sendFile(path.join(__dirname, 'overrides.css')));
 app.get('/app.js', (_req, res) => res.sendFile(path.join(__dirname, 'app.js')));
 app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
@@ -111,9 +111,7 @@ app.post('/api/deposits', auth, async (req, res) => {
 app.get('/api/deposits/:id', auth, async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM wallet_transactions WHERE id=$1 AND user_id=$2 AND kind=$3', [req.params.id, req.user.sub, 'deposit']);
   const transaction = rows[0]; if (!transaction) return res.sendStatus(404);
-  if (transaction.status === 'pending') await refreshDeposit(transaction);
-  const current = await pool.query('SELECT status,amount FROM wallet_transactions WHERE id=$1', [transaction.id]);
-  res.json(current.rows[0]);
+  res.json({ status: transaction.status, amount: transaction.amount });
 });
 app.post('/api/withdrawals', auth, async (req, res) => {
   const client = await pool.connect();
@@ -194,20 +192,12 @@ app.patch('/api/admin/questions/:id', auth, adminOnly, async (req, res) => {
 function publicUser(user) { return { id: user.id, phone: user.phone, displayName: user.display_name, nickname: user.nickname || '', walletPhone: user.wallet_phone || user.phone, walletBalance: user.wallet_balance, role: user.role || 'member' }; }
 function publicUserWithDate(user) { return { ...publicUser(user), createdAt: user.created_at }; }
 async function mobileMoney(route, body) {
-  const base = process.env.MOBILE_MONEY_BASE_URL;
-  if (!base || !process.env.MOBILE_MONEY_API_KEY || !process.env.MOBILE_MONEY_ACCOUNT_ID) throw new Error('Mobile-money service is not configured yet.');
+  const base = process.env.MOBILE_MONEY_BASE_URL || 'https://api.hashback.co.ke';
+  if (!process.env.MOBILE_MONEY_API_KEY || !process.env.MOBILE_MONEY_ACCOUNT_ID) throw new Error('Mobile-money service is not configured yet.');
   const response = await fetch(`${base.replace(/\/$/, '')}${route}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
-  if (!response.ok) throw new Error('The mobile-money service is unavailable. Please try again.');
-  return response.json();
-}
-async function refreshDeposit(transaction) {
-  if (depositRefreshes.has(transaction.id)) return;
-  depositRefreshes.add(transaction.id);
-  try {
-    const state = await mobileMoney('/transactionstatus', { api_key: process.env.MOBILE_MONEY_API_KEY, account_id: process.env.MOBILE_MONEY_ACCOUNT_ID, checkoutid: transaction.provider_checkout_id });
-    if (state.ResultCode !== '0') return;
-    if (state.ResultCode === '0') await confirmDeposit(transaction.id);
-  } catch (error) { if (error.name !== 'TimeoutError') console.error('deposit refresh failed', error.message); } finally { depositRefreshes.delete(transaction.id); }
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.message || 'The mobile-money service is unavailable. Please try again.');
+  return result;
 }
 function validSignature(rawBody, received, secret) {
   const expected = `sha256=${crypto.createHmac('sha256', secret).update(rawBody).digest('hex')}`;

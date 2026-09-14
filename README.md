@@ -15,7 +15,7 @@ JUA is a Node 20, Express and PostgreSQL application ready for a Render Web Serv
 ```text
 DATABASE_URL=Render internal PostgreSQL URL
 JWT_SECRET=a long randomly generated secret
-MOBILE_MONEY_BASE_URL=payment service API base URL
+MOBILE_MONEY_BASE_URL=https://api.hashback.co.ke
 MOBILE_MONEY_API_KEY=merchant API key
 MOBILE_MONEY_ACCOUNT_ID=merchant account ID
 MOBILE_MONEY_WEBHOOK_SECRET=webhook signing secret
@@ -34,13 +34,19 @@ https://your-domain.com/api/payments/webhook
 
 Save the portal's webhook signing secret as `MOBILE_MONEY_WEBHOOK_SECRET` in Render. The endpoint verifies the signature over the exact raw request body, matches the provider checkout reference, amount and mobile number to a pending JUA deposit, and credits the wallet in one database transaction. Duplicate callbacks do not create a second credit.
 
+## Payment connection flow
+
+The deposit route posts the documented `api_key`, `account_id`, `amount`, `msisdn` and a unique JUA reference to `https://api.hashback.co.ke/initiatestk`. It saves the returned `checkout_id` with the pending deposit. It does not credit a balance from the browser response. A later signed `payment.success` callback to the URL above credits the matched pending deposit exactly once.
+
+This means the three merchant values must be copied exactly from the payment dashboard. Deploy first, register the callback URL in that dashboard, then place one real KES 200 test deposit. A successful prompt alone is not enough: the balance changes only after the signed callback reaches Render.
+
 ## What is enforced in the app
 
 - Account registration and sign-in are required before wallet or game access.
 - Minimum deposit is KES 200; minimum stake is KES 50.
 - Minimum withdrawal is KES 500.
 - The mobile payment prompt goes only to the number the player enters.
-- A deposit is credited only after the server confirms it with the payment service.
+- A deposit is credited only after the server accepts a signed payment-success callback.
 - Every profile receives unseen questions only; `seen_questions` prevents repeats.
 - All game scoring is performed on the server.
 - Withdrawal requests capture an amount and Kenyan mobile number and remain traceable in the database.
